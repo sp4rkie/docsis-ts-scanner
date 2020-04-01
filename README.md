@@ -62,7 +62,7 @@ Please see tshark/ wireshark for further information.
           -h                    - print this help and exit
           -f [0-9]+(/[0-9]+)?(:[0-9]+(/[0-9]+)?)*
                                 - acquired start frequencies in segment (in MHz)
-          -c [0-9]              - select DVB-T tuner
+          -c [0-9]              - select DVB-C tuner
           -m (filtered|full)    - select operation mode
           -v                    - increase logging verbosity
 

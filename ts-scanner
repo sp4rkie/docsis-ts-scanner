@@ -210,7 +210,7 @@ func process_cmdline( \
         } else if (match(_ARGV[i] " " _ARGV[i + 1], "-f [0-9]+(/[0-9]+)?(:[0-9]+(/[0-9]+)?)*$")) { # acquired start frequencies in segment (in MHz)
             freq_list = _ARGV[i + 1]
             ++i
-        } else if (match(_ARGV[i] " " _ARGV[i + 1], "-c [0-9]$")) { # select DVB-T tuner
+        } else if (match(_ARGV[i] " " _ARGV[i + 1], "-c [0-9]$")) { # select DVB-C tuner
             CARD = _ARGV[i + 1]
             ++i
         } else if (match(_ARGV[i] " " _ARGV[i + 1], "-m (filtered|full)$")) { # select operation mode
