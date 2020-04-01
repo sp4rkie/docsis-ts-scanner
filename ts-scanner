@@ -1,0 +1,272 @@
+#!/bin/sh
+
+#
+# DOCSIS transport stream scanner
+#
+# CLI tool to display DOCSIS transport streams in a human readable way
+#
+# https://github.com/sp4rkie/docsis-ts-scanner
+#
+
+cat > $0_$$.awk << !
+
+func setup( \
+    )
+{
+    CLARGS = "$0|$1|$2|$3|$4|$5|$6|$7|$8|$9|${10}|${11}|${12}|${13}|${14}|${15}|${16}|${17}|${18}|${19}|${20}"
+
+    # avoid dangling include files. incore inode still exists
+    system("rm $0_$$.awk")
+
+    # take care of shell expansion (if security is an issue)
+    setup_lib($#, "awk|" CLARGS, $$, "`pwd`", "`cat /etc/hostname`", "$R_")
+    PRP(CLARGS "\n")
+
+    # required if Sundtek hardware is in use as we install with '-service' option
+    LD_PL = "LD_PRELOAD=/opt/lib/libmediaclient.so "
+
+    PCKTS_PER_FILE = 100000           # -n 100000 => 188 * 100000 == 18800000
+
+    MAX_FILES = 100                   # docsis ts dump ring buffer size
+
+    MODEMS_FILE = "modems.txt"
+    DOCSIS_FILE = "docsis.txt"
+    DECODE_FILE = "decode.txt"
+
+    FREQ_FACTOR = 1000000
+}
+
+func exit_(msg \
+    )
+{
+    PRE(msg)
+    PRE("exiting...")
+    ++ERR; exit
+}
+
+func set_freqs(str, \
+    i, a, b)
+{
+    if (!match(str, "^[0-9]+(/[0-9]+)?(:[0-9]+(/[0-9]+)?)*$")) {
+        return 0
+    }
+    split(str, a, ":")
+    FREQ_CNT = 0
+    for (i = 1; a[i]; ++i) {
+        split(a[i], b, "/")
+        FREQ[FREQ_CNT] = b[1]
+        # set the default to QAM256
+        MODP[FREQ[FREQ_CNT]] = b[2] ? b[2] : "256"
+        ++FREQ_CNT
+    }
+    return 1
+}
+
+func watch_the_scenery( \
+    was_here, start, stop, cnt, line, CMD, line1, CMD1, a)
+{
+    cnt = 0
+
+    DUMP_DIR = "./"
+    DUMP_FILE = "m2ts." "[0-9]*" "\\\."
+    DUMP_PFX = "[0-9]*"
+
+    ex("mkdir -p " DUMP_DIR, 0)
+    ex("rm -v " DUMP_DIR DUMP_FILE DUMP_PFX) # remove all old dumps ATM
+    if (ex("ls -t " DUMP_DIR DUMP_FILE DUMP_PFX " 2>&1", 0, "^" DUMP_DIR DUMP_FILE "(" DUMP_PFX ")" "$", a)) {
+        cnt = (a[1] + 1) % MAX_FILES
+    } else {
+        cnt = 0
+    }
+    CMD = CMD "cnt=" cnt "; " 
+    CMD = CMD "while :; do " 
+    for (i = 0; i < FREQ_CNT; ++i) {
+        DUMP_FILE = "m2ts." FREQ[i] "."
+        CMD = CMD "LD_PRELOAD=/opt/lib/libmediaclient.so " \
+                  "dvbtune -c " CARD " -f " FREQ[i] * FREQ_FACTOR " -s 6952 -qam " MODP[FREQ[i]] " 2> /dev/null; " 
+        CMD = CMD "LD_PRELOAD=/opt/lib/libmediaclient.so " \
+                  "dvbsnoop -adapter " CARD " -s ts 8190 -b -n " PCKTS_PER_FILE \
+                  " > " DUMP_DIR DUMP_FILE "\$cnt; " \
+                  "echo --- [ " DUMP_FILE "\$cnt ] ---; " 
+    }
+    CMD = CMD "cnt=\`expr \\\( \$cnt + 1 \\\) % " MAX_FILES "\`; "
+    CMD = CMD "done"
+PRP(CMD)
+    print "" |& CMD
+    close(CMD, "to")
+
+    if (MODE == "full") {
+
+filter = "none"
+
+    } else if (MODE == "filtered") {
+
+#
+# FILTER 0:
+#
+# show exclusively all of these:
+#
+# Type: Multipart Registration Response (45)
+# Type: MAC Domain Descriptor (33)
+# Type: Upstream Channel Descriptor Type (29)
+# Type: Privacy Key Management Response (13)
+#
+
+filter = "docsis_mgmt.type == 45 || docsis_mgmt.type == 33 || docsis_mgmt.type == 29 || docsis_mgmt.type == 13"
+
+#
+# FILTER 1:
+#
+# show all except these:
+#
+# Type: Upstream Bandwidth Allocation (3)
+# Type: Timing Synchronisation (1)
+# Type: Ranging Response (5)
+# frame.protocols mp2t: fragments
+# Type: ethernet II                     
+#
+
+#filter = "!(docsis_mgmt.type == 3) && !(docsis_mgmt.type == 1) && !(eth) && !(docsis_mgmt.type == 5) && !(frame.protocols == \\\\\"mp2t\\\\\")"
+
+    }
+PR("filter: " filter)
+
+    while (1) {
+        was_here = 0
+        t1 = strftime("+%s")
+if (verbose) PRF("waiting for next stream dump to complete")
+        CMD |& getline line 
+        t2 = strftime("+%s")
+        if (match(line, "^--- \\\[ ([^ ]+) \\\] ---$", a)) {
+if (verbose) PR("wait time for " a[1] ": " t2 - t1 "s" "            ")
+        } else {
+            exit_("internal error")
+        }
+if (verbose) PRF("processing... ")
+
+        CMD1 = ""
+        CMD1 = CMD1 "tshark " 
+if (filter != "none") {
+        CMD1 = CMD1 "-Y \"" filter "\" "
+}
+        CMD1 = CMD1 \
+               "-T text -V " \
+               "-r " DUMP_DIR a[1]
+
+        while ((line1 = ex_line(CMD1)) != -1) {
+            if (!match(line1, "Running as user")) {
+                if (!was_here) print "----------------------- [ " DUMP_DIR DUMP_FILE a[1] " ] -----------------------" >> DECODE_FILE
+if (verbose && !was_here++) PR("")
+                if (MODE == "filtered" && match(line1, "^Frame|^        Type: ")) {
+                    PR(line1)
+                }
+                print line1 >> DECODE_FILE
+            }
+        }
+        ex("rm -v " DUMP_DIR a[1])
+        t3 = strftime("+%s")
+if (verbose) PR("processing time: " t3 - t2 "s")
+    }
+}
+
+func check_prerequisites( \
+    i, a)
+{
+    PRERQCMDS = "wget gawk dvbsnoop dvbtune dvb-fe-tool sudo tshark"
+    split(PRERQCMDS, a)
+    for (i = 1; a[i]; ++i) {
+        if (!ex("which " a[i], 0, "(.)")) {
+            exit_("can't find executable for [ " a[i] " ], please install this first")
+        }
+    }
+}
+
+func usage( \
+    locked, line, a)
+{
+    PR("Usage: " PRGBNAME)
+    while ((line = ex_line("cat " PRGNAME)) != -1) {
+        if (locked) {
+            if (match(line, "match[^,]+, \"(.+)\"[^\"]+# (.*)$", a)) {
+                PRF(sprintf("  %-21s", gensub("\\\\$", "", "g", a[1])))
+                if (length(gensub("\\\\$", "", "g", a[1])) > 27) {
+                    PRF("\n  %-21s", "")
+                }
+                PR(sprintf(" - %s", a[2]))
+            }
+        } else {
+            if (match(line, "^func process_cmdline")) ++locked
+        }
+    }
+}
+
+func process_cmdline( \
+    i, a)
+{
+    for (i = 2; i < _ARGC; ++i) {
+        if (match(_ARGV[i] _ARGV[i + 1], "-h$")) { # print this help and exit
+            usage()
+            exit
+        } else if (match(_ARGV[i] " " _ARGV[i + 1], "-f [0-9]+(/[0-9]+)?(:[0-9]+(/[0-9]+)?)*$")) { # acquired start frequencies in segment (in MHz)
+            freq_list = _ARGV[i + 1]
+            ++i
+        } else if (match(_ARGV[i] " " _ARGV[i + 1], "-c [0-9]$")) { # select DVB-T tuner
+            CARD = _ARGV[i + 1]
+            ++i
+        } else if (match(_ARGV[i] " " _ARGV[i + 1], "-m (filtered|full)$")) { # select operation mode
+            MODE = _ARGV[i + 1]
+            ++i
+        } else if (match(_ARGV[i], "-v$")) { # increase logging verbosity
+            ++verbose
+        } else {
+            usage()
+            ++ERR; exit
+        }
+    }
+    # make verbose always ATM
+    ++verbose
+    if (!MODE) {
+        exit_("no operation mode given")
+    }
+    if (!freq_list) {
+        exit_("no start frequency given")
+    }
+    if (!CARD) {
+        CARD = 0
+    }
+    check_prerequisites()
+    if (!set_freqs(freq_list)) {
+        exit_("can't handle the given acquired start frequencies")
+    }
+    PR("operation mode: " MODE)
+    PR("card selected: " CARD)
+    PR("verbose: " (verbose ? "yes" : "no"))
+    PRF("selected start frequencies: [ " FREQ_CNT " ] ")
+    for (i = 0; i < FREQ_CNT; ++i) {
+        PRF("%-11s", FREQ[i] "/" "QAM" MODP[FREQ[i]])
+    }
+    PR("")
+    PR("output goes to: " DECODE_FILE)
+    watch_the_scenery()
+}
+
+BEGIN {
+    QUIET = 1
+    setup()
+    process_cmdline()
+    exit
+}
+
+END { 
+    cleanup()
+    PRP("\n" PRGBNAME " " "exits with: " (ERR ? ERR : 0) " " "error(s)")
+    PRP("====== [" sprintf(" %5d ", PROCINFO["pid"]) "] program stop  [" strftime() "] on " HOSTNAME " ======")
+    close(PROTOCOL)
+    exit ERR
+}
+
+!
+
+[ -t 0 ] && STDIN="< /dev/null"
+eval exec awk -f $0.awklib -f $0_$$.awk $STDIN 2>&1
+
